@@ -1,58 +1,43 @@
 #!/usr/bin/env python3
 """
-Build a designed PDF of "Git By Example" from the markdown source files.
+Build designed PDFs of "Git By Example" from the markdown source files.
 
-Usage: python scripts/build_pdf.py [output_filename.pdf]
+Produces two variants:
+  - Light mode (default)
+  - Dark mode
+
+Usage:
+  python scripts/build_pdf.py <output.pdf>              # light mode
+  python scripts/build_pdf.py <output.pdf> --dark        # dark mode
+  python scripts/build_pdf.py <basename>   --both        # both variants
 """
 
-import sys
-import os
-import re
-import markdown
-from bs4 import BeautifulSoup
+import sys, os, re, datetime
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm, cm
 from reportlab.lib.colors import HexColor, white, black
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle,
-    Flowable, KeepTogether, Frame, PageTemplate, BaseDocTemplate,
-    NextPageTemplate, ListFlowable, ListItem
+    Paragraph, Spacer, PageBreak, Table, TableStyle,
+    Flowable, Frame, PageTemplate, BaseDocTemplate, NextPageTemplate,
 )
-from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus.tableofcontents import TableOfContents
-import datetime
+from reportlab.pdfbase.pdfmetrics import registerFontFamily
 
-# ---------------------------------------------------------------------------
-# Color palette
-# ---------------------------------------------------------------------------
-CLR_BG_DARK    = HexColor("#1a1b26")    # Tokyo Night dark bg
-CLR_BG_CODE    = HexColor("#24283b")    # Code block bg
-CLR_ACCENT     = HexColor("#7aa2f7")    # Bright blue
-CLR_ACCENT2    = HexColor("#bb9af7")    # Purple
-CLR_ACCENT3    = HexColor("#9ece6a")    # Green
-CLR_ORANGE     = HexColor("#ff9e64")    # Orange
-CLR_RED        = HexColor("#f7768e")    # Red / warning
-CLR_TEXT       = HexColor("#2e3440")    # Dark text
-CLR_TEXT_LIGHT = HexColor("#565e6c")    # Secondary text
-CLR_BORDER     = HexColor("#d0d7e3")    # Light border
-CLR_BG_TIP     = HexColor("#e8f4f8")    # Tip box bg
-CLR_BG_WARN    = HexColor("#fef3e2")    # Warning box bg
-CLR_BG_PAGE    = HexColor("#fafbfc")    # Page background hint
-CLR_WHITE      = white
+from pygments.lexers import get_lexer_by_name, TextLexer
+from pygments.token import Token
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Constants
+# ═══════════════════════════════════════════════════════════════════════════
 
 PAGE_W, PAGE_H = A4
-MARGIN_LEFT   = 2.2 * cm
-MARGIN_RIGHT  = 2.2 * cm
-MARGIN_TOP    = 2.5 * cm
-MARGIN_BOTTOM = 2.5 * cm
+ML, MR, MT, MB = 2.2*cm, 2.2*cm, 2.5*cm, 2.5*cm
+CW = PAGE_W - ML - MR
 
-# ---------------------------------------------------------------------------
-# Ordered list of source files
-# ---------------------------------------------------------------------------
 CHAPTERS = [
     ("chapters/01-getting-started.md",      "Part I — Foundations"),
     ("chapters/02-the-basics.md",           None),
@@ -80,715 +65,580 @@ CHAPTERS = [
     ("appendices/aliases.md",               None),
 ]
 
+LEXER_MAP = {
+    "bash":"bash","sh":"bash","shell":"bash","zsh":"bash",
+    "python":"python","py":"python","javascript":"javascript","js":"javascript",
+    "json":"json","yaml":"yaml","yml":"yaml","ini":"ini","toml":"toml",
+    "diff":"diff","patch":"diff","gitignore":"ini","powershell":"powershell",
+    "go":"go","rust":"rust","java":"java","html":"html","css":"css",
+}
 
-# ---------------------------------------------------------------------------
-# Custom Flowables
-# ---------------------------------------------------------------------------
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fonts
+# ═══════════════════════════════════════════════════════════════════════════
+
+def setup_fonts():
+    sd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+    pdfmetrics.registerFont(TTFont("Inter",    os.path.join(sd, "Inter-Regular.ttf")))
+    pdfmetrics.registerFont(TTFont("Inter-B",  os.path.join(sd, "Inter-Bold.ttf")))
+    pdfmetrics.registerFont(TTFont("Inter-I",  os.path.join(sd, "Inter-Italic.ttf")))
+    pdfmetrics.registerFont(TTFont("Inter-BI", os.path.join(sd, "Inter-BoldItalic.ttf")))
+    registerFontFamily("Inter", normal="Inter", bold="Inter-B",
+                       italic="Inter-I", boldItalic="Inter-BI")
+
+    pd = "/usr/share/fonts/truetype/ibm-plex"
+    if not os.path.isdir(pd):
+        pd = sd
+    pdfmetrics.registerFont(TTFont("Plex",    os.path.join(pd, "IBMPlexMono-Regular.ttf")))
+    pdfmetrics.registerFont(TTFont("Plex-B",  os.path.join(pd, "IBMPlexMono-Bold.ttf")))
+    pdfmetrics.registerFont(TTFont("Plex-I",  os.path.join(pd, "IBMPlexMono-Italic.ttf")))
+    pdfmetrics.registerFont(TTFont("Plex-BI", os.path.join(pd, "IBMPlexMono-BoldItalic.ttf")))
+    registerFontFamily("Plex", normal="Plex", bold="Plex-B",
+                       italic="Plex-I", boldItalic="Plex-BI")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Themes — Claude.ai branding colors
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _hx(s):
+    return HexColor(s)
+
+def theme(dark=False):
+    if dark:
+        return dict(
+            page_bg      = _hx("#1B1B1F"),
+            text         = _hx("#E8E4DD"),
+            text2        = _hx("#9B9590"),
+            accent       = _hx("#DA7756"),
+            accent2      = _hx("#E8A87C"),
+            heading      = _hx("#F4F3EE"),
+            h3           = _hx("#DA7756"),
+            code_bg      = _hx("#131316"),
+            border       = _hx("#3A3A40"),
+            tip_bg       = _hx("#2A2520"),
+            warn_bg      = _hx("#2E2518"),
+            tbl_hdr      = _hx("#2A2A30"),
+            tbl_brd      = _hx("#3A3A40"),
+            ic_fg        = _hx("#E8A87C"),
+            ic_bg        = _hx("#2A2A30"),
+            badge_fg     = _hx("#131316"),
+            # syntax
+            tk_kw=_hx("#DA7756"), tk_str=_hx("#A3BE8C"), tk_cmt=_hx("#6B6560"),
+            tk_num=_hx("#D08770"), tk_fn=_hx("#E8A87C"), tk_op=_hx("#D4D0C8"),
+            tk_bi=_hx("#EBCB8B"), tk_var=_hx("#E8E4DD"), tk_add=_hx("#A3BE8C"),
+            tk_del=_hx("#BF616A"), tk_hd=_hx("#DA7756"), tk_def=_hx("#D4D0C8"),
+        )
+    else:
+        return dict(
+            page_bg      = _hx("#FFFFFF"),
+            text         = _hx("#1A1915"),
+            text2        = _hx("#6B6560"),
+            accent       = _hx("#DA7756"),
+            accent2      = _hx("#C4623E"),
+            heading      = _hx("#1A1915"),
+            h3           = _hx("#DA7756"),
+            code_bg      = _hx("#1A1915"),
+            border       = _hx("#E8E4DD"),
+            tip_bg       = _hx("#FBF8F4"),
+            warn_bg      = _hx("#FEF6EE"),
+            tbl_hdr      = _hx("#F4F3EE"),
+            tbl_brd      = _hx("#E8E4DD"),
+            ic_fg        = _hx("#C4623E"),
+            ic_bg        = _hx("#F4F3EE"),
+            badge_fg     = _hx("#FFFFFF"),
+            # syntax
+            tk_kw=_hx("#B7472A"), tk_str=_hx("#4D7A3C"), tk_cmt=_hx("#9B9590"),
+            tk_num=_hx("#B7472A"), tk_fn=_hx("#8B5E3C"), tk_op=_hx("#1A1915"),
+            tk_bi=_hx("#8B6914"), tk_var=_hx("#1A1915"), tk_add=_hx("#4D7A3C"),
+            tk_del=_hx("#B7472A"), tk_hd=_hx("#DA7756"), tk_def=_hx("#D4D0C8"),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Syntax Highlighting
+# ═══════════════════════════════════════════════════════════════════════════
+
+def tok_color(tt, T):
+    """Map Pygments token type → theme color."""
+    if tt in Token.Keyword:            return T["tk_kw"]
+    if tt in Token.Name.Function:      return T["tk_fn"]
+    if tt in Token.Name.Builtin:       return T["tk_bi"]
+    if tt in Token.Name.Variable:      return T["tk_var"]
+    if tt in Token.Literal.String:     return T["tk_str"]
+    if tt in Token.Literal.Number:     return T["tk_num"]
+    if tt in Token.Comment:            return T["tk_cmt"]
+    if tt in Token.Operator:           return T["tk_op"]
+    if tt in Token.Generic.Inserted:   return T["tk_add"]
+    if tt in Token.Generic.Deleted:    return T["tk_del"]
+    if tt in Token.Generic.Heading:    return T["tk_hd"]
+    if tt in Token.Generic.Strong:     return T["tk_fn"]
+    if tt in Token.Name.Decorator:     return T["tk_fn"]
+    if tt in Token.Name.Class:         return T["tk_fn"]
+    return T["tk_def"]
+
+def tokenize(code, lang):
+    lk = LEXER_MAP.get(lang.lower(), lang.lower()) if lang else ""
+    try:
+        lex = get_lexer_by_name(lk, stripall=False)
+    except Exception:
+        lex = TextLexer()
+    toks = list(lex.get_tokens(code))
+    lines = [[]]
+    for tt, tv in toks:
+        parts = tv.split("\n")
+        for j, p in enumerate(parts):
+            if j > 0:
+                lines.append([])
+            if p:
+                lines[-1].append((p, tt))
+    if lines and not lines[-1]:
+        lines.pop()
+    return lines
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Flowables
+# ═══════════════════════════════════════════════════════════════════════════
 
 class CodeBlock(Flowable):
-    """A syntax-highlighted code block with rounded corners."""
+    FS = 7.8; LH = 12; PAD = 8*mm
 
-    def __init__(self, code, language="", width=None):
+    def __init__(self, code, lang="", T=None):
         super().__init__()
         self.code = code.rstrip("\n")
-        self.language = language
-        self._width = width or (PAGE_W - MARGIN_LEFT - MARGIN_RIGHT)
-        self.padding = 10 * mm
-        self.line_height = 12
-        self.lines = self.code.split("\n")
-        self.height = self.padding * 2 + len(self.lines) * self.line_height + 4
+        self.lang = lang
+        self.T = T or theme()
+        self.tlines = tokenize(self.code, self.lang)
 
-    def wrap(self, availWidth, availHeight):
-        self._width = availWidth
-        self.height = self.padding + 8 + len(self.lines) * self.line_height + self.padding
-        return (self._width, self.height)
+    def wrap(self, aw, ah):
+        self._w = aw
+        self.height = self.PAD + 6 + len(self.tlines)*self.LH + self.PAD
+        return (self._w, self.height)
 
     def draw(self):
-        c = self.canv
-        w, h = self._width, self.height
-        r = 4 * mm
-
-        # Background
-        c.setFillColor(CLR_BG_DARK)
-        c.roundRect(0, 0, w, h, r, fill=1, stroke=0)
-
-        # Language badge
-        if self.language:
-            c.setFont("Helvetica", 7)
-            c.setFillColor(CLR_TEXT_LIGHT)
-            tw = c.stringWidth(self.language.upper(), "Helvetica", 7)
-            c.roundRect(w - tw - 16, h - 18, tw + 12, 14, 3, fill=0, stroke=0)
-            c.setFillColor(HexColor("#565e6c"))
-            c.drawString(w - tw - 10, h - 14.5, self.language.upper())
-
-        # Code lines
-        c.setFont("Courier", 8.5)
-        y = h - self.padding - 4
-        for line in self.lines:
-            # Simple syntax coloring
-            display_line = line
-            color = HexColor("#a9b1d6")  # default text
-
-            stripped = line.lstrip()
-            if stripped.startswith("#") and not stripped.startswith("#!"):
-                color = HexColor("#565a6e")  # comment
-            elif stripped.startswith(("$", "git ", "npm ", "echo ", "mkdir ", "cd ", "ls ", "cat ", "rm ", "find ", "chmod ")):
-                color = CLR_ACCENT3
-            elif stripped.startswith(("+++", "---", "diff ")):
-                color = CLR_ACCENT
-            elif stripped.startswith("+"):
-                color = CLR_ACCENT3
-            elif stripped.startswith("-"):
-                color = CLR_RED
-            elif stripped.startswith(("*", "error:", "fatal:", "CONFLICT")):
-                color = CLR_ORANGE
-            elif any(stripped.startswith(k) for k in ("pick ", "reword ", "edit ", "squash ", "fixup ", "drop ")):
-                color = CLR_ACCENT2
-
-            c.setFillColor(color)
-            # Truncate long lines
-            max_chars = int((w - self.padding * 2) / 4.5)
-            if len(display_line) > max_chars:
-                display_line = display_line[:max_chars - 1] + "…"
-            c.drawString(self.padding, y, display_line)
-            y -= self.line_height
+        c = self.canv; w = self._w; h = self.height; T = self.T
+        c.setFillColor(T["code_bg"])
+        c.roundRect(0, 0, w, h, 3.5*mm, fill=1, stroke=0)
+        if self.lang:
+            c.setFont("Plex", 6); c.setFillColor(T["tk_cmt"])
+            lb = self.lang.upper()
+            c.drawString(w - c.stringWidth(lb,"Plex",6) - 10, h - 13, lb)
+        y = h - self.PAD - 4
+        mx = int((w - self.PAD*2) / 4.2)
+        for tl in self.tlines:
+            x = self.PAD; cc = 0
+            for txt, tt in tl:
+                c.setFillColor(tok_color(tt, T))
+                c.setFont("Plex", self.FS)
+                rem = mx - cc
+                if len(txt) > rem:
+                    txt = txt[:rem-1] + "…"
+                c.drawString(x, y, txt)
+                x += c.stringWidth(txt, "Plex", self.FS)
+                cc += len(txt)
+                if cc >= mx: break
+            y -= self.LH
 
 
 class TipBox(Flowable):
-    """A callout box for tips (🧠) or warnings (⚠️)."""
-
-    def __init__(self, text, kind="tip", width=None):
+    def __init__(self, text, kind="tip", T=None):
         super().__init__()
-        self.text = text
-        self.kind = kind  # "tip" or "warning"
-        self._width = width or (PAGE_W - MARGIN_LEFT - MARGIN_RIGHT)
-        self._calculated = False
+        self.text = text; self.kind = kind; self.T = T or theme()
 
-    def _calc(self, availWidth):
-        self._width = availWidth
-        style = ParagraphStyle(
-            "tiptext", fontName="Helvetica", fontSize=8.5,
-            leading=13, textColor=CLR_TEXT
-        )
-        self._para = Paragraph(self.text, style)
-        pw, ph = self._para.wrap(availWidth - 18 * mm, 1000)
-        self.height = max(ph + 10 * mm, 14 * mm)
-        self._calculated = True
-
-    def wrap(self, availWidth, availHeight):
-        self._calc(availWidth)
-        return (self._width, self.height)
+    def wrap(self, aw, ah):
+        self._w = aw; T = self.T
+        s = ParagraphStyle("t", fontName="Inter", fontSize=8.5, leading=13,
+                           textColor=T["text"])
+        self._p = Paragraph(self.text, s)
+        _, ph = self._p.wrap(aw - 14*mm, 10000)
+        self.height = max(ph + 10*mm, 14*mm)
+        return (self._w, self.height)
 
     def draw(self):
-        c = self.canv
-        w, h = self._width, self.height
-        r = 3 * mm
-
-        bg = CLR_BG_TIP if self.kind == "tip" else CLR_BG_WARN
-        accent = CLR_ACCENT if self.kind == "tip" else CLR_ORANGE
-
-        # Background
-        c.setFillColor(bg)
-        c.roundRect(0, 0, w, h, r, fill=1, stroke=0)
-
-        # Left accent bar
-        c.setFillColor(accent)
-        c.roundRect(0, 0, 3, h, 1, fill=1, stroke=0)
-
-        # Icon
-        icon = "🧠" if self.kind == "tip" else "⚠"
-        c.setFont("Helvetica-Bold", 10)
-        c.setFillColor(accent)
-        c.drawString(5 * mm, h - 9 * mm, icon)
-
-        # Text
-        self._para.drawOn(c, 12 * mm, 4 * mm)
+        c = self.canv; w = self._w; h = self.height; T = self.T
+        bg = T["tip_bg"] if self.kind == "tip" else T["warn_bg"]
+        ac = T["accent"] if self.kind == "tip" else T["accent2"]
+        c.setFillColor(bg); c.roundRect(0,0,w,h,3*mm,fill=1,stroke=0)
+        c.setFillColor(ac); c.rect(0,0,3,h,fill=1,stroke=0)
+        label = "What happened?" if self.kind == "tip" else "Warning"
+        c.setFont("Inter-B", 8); c.setFillColor(ac)
+        c.drawString(5*mm, h - 8.5*mm, label)
+        self._p.drawOn(c, 5*mm, 3.5*mm)
 
 
 class PartDivider(Flowable):
-    """Full-width part divider page."""
-
-    def __init__(self, title):
+    def __init__(self, title, T=None):
         super().__init__()
-        self.title = title
-        self.height = 200 * mm  # fixed safe height
+        self.title = title; self.T = T or theme()
+        self.height = 200*mm
 
-    def wrap(self, availWidth, availHeight):
-        self.height = min(self.height, availHeight - 2)
-        return (availWidth, self.height)
+    def wrap(self, aw, ah):
+        self._w = aw; self.height = min(self.height, ah - 2)
+        return (self._w, self.height)
 
     def draw(self):
-        c = self.canv
-        w = PAGE_W - MARGIN_LEFT - MARGIN_RIGHT
-        h = self.height
-
-        # Large accent circle
-        c.setFillColor(CLR_ACCENT)
-        c.setStrokeColor(CLR_ACCENT)
-        c.setLineWidth(0)
-        c.circle(w / 2, h * 0.55, 18 * mm, fill=1, stroke=0)
-
-        # Part number/title
-        c.setFillColor(CLR_WHITE)
-        c.setFont("Helvetica-Bold", 14)
-        tw = c.stringWidth(self.title.split("—")[0].strip(), "Helvetica-Bold", 14)
-        c.drawCentredString(w / 2, h * 0.55 + 2, self.title.split("—")[0].strip())
-
-        # Subtitle
+        c = self.canv; w = self._w; h = self.height; T = self.T
+        c.setFillColor(T["accent"])
+        c.circle(w/2, h*0.55, 18*mm, fill=1, stroke=0)
+        pl = self.title.split("—")[0].strip() if "—" in self.title else self.title
+        c.setFillColor(T["badge_fg"]); c.setFont("Inter-B", 14)
+        c.drawCentredString(w/2, h*0.55 - 4, pl)
         if "—" in self.title:
-            subtitle = self.title.split("—", 1)[1].strip()
-            c.setFillColor(CLR_TEXT)
-            c.setFont("Helvetica", 20)
-            c.drawCentredString(w / 2, h * 0.55 - 40 * mm, subtitle)
-
-        # Decorative line
-        c.setStrokeColor(CLR_BORDER)
-        c.setLineWidth(0.5)
-        lw = 60 * mm
-        c.line(w / 2 - lw / 2, h * 0.55 - 52 * mm, w / 2 + lw / 2, h * 0.55 - 52 * mm)
+            sub = self.title.split("—",1)[1].strip()
+            c.setFillColor(T["heading"]); c.setFont("Inter", 20)
+            c.drawCentredString(w/2, h*0.55 - 40*mm, sub)
+        c.setStrokeColor(T["border"]); c.setLineWidth(0.5)
+        c.line(w/2-30*mm, h*0.55-52*mm, w/2+30*mm, h*0.55-52*mm)
 
 
 class ChapterHeader(Flowable):
-    """Styled chapter header."""
-
-    def __init__(self, number, title):
+    def __init__(self, num, title, T=None):
         super().__init__()
-        self.number = number
-        self.title = title
-        self.height = 28 * mm
+        self.num = num; self.title = title; self.T = T or theme()
+        self.height = 28*mm
 
-    def wrap(self, availWidth, availHeight):
-        self._width = availWidth
-        return (availWidth, self.height)
+    def wrap(self, aw, ah):
+        self._w = aw; return (aw, self.height)
 
     def draw(self):
-        c = self.canv
-        w = self._width
-
-        # Chapter number
-        c.setFillColor(CLR_ACCENT)
-        c.setFont("Helvetica", 11)
-        c.drawString(0, self.height - 8 * mm, self.number)
-
-        # Accent line
-        c.setStrokeColor(CLR_ACCENT)
-        c.setLineWidth(2)
-        c.line(0, self.height - 11 * mm, 30 * mm, self.height - 11 * mm)
-
-        # Title
-        c.setFillColor(CLR_TEXT)
-        c.setFont("Helvetica-Bold", 22)
-        # Handle long titles
-        title = self.title
-        if len(title) > 40:
-            c.setFont("Helvetica-Bold", 18)
-        c.drawString(0, self.height - 24 * mm, title)
+        c = self.canv; T = self.T
+        c.setFillColor(T["accent"]); c.setFont("Inter", 11)
+        c.drawString(0, self.height - 8*mm, self.num)
+        c.setStrokeColor(T["accent"]); c.setLineWidth(2)
+        c.line(0, self.height - 11*mm, 30*mm, self.height - 11*mm)
+        c.setFillColor(T["heading"])
+        fs = 22 if len(self.title) <= 40 else 18
+        c.setFont("Inter-B", fs)
+        c.drawString(0, self.height - 24*mm, self.title)
 
 
-# ---------------------------------------------------------------------------
-# Page templates
-# ---------------------------------------------------------------------------
+class CoverImage(Flowable):
+    def __init__(self, path):
+        super().__init__()
+        self.path = path; self.height = PAGE_H
 
-def page_background_normal(canvas_obj, doc):
-    """Draw header/footer on normal pages."""
-    c = canvas_obj
-    c.saveState()
+    def wrap(self, aw, ah):
+        return (PAGE_W, PAGE_H)
 
-    # Top line
-    c.setStrokeColor(CLR_BORDER)
-    c.setLineWidth(0.4)
-    c.line(MARGIN_LEFT, PAGE_H - MARGIN_TOP + 5 * mm,
-           PAGE_W - MARGIN_RIGHT, PAGE_H - MARGIN_TOP + 5 * mm)
-
-    # Header text
-    c.setFont("Helvetica", 7)
-    c.setFillColor(CLR_TEXT_LIGHT)
-    c.drawString(MARGIN_LEFT, PAGE_H - MARGIN_TOP + 7 * mm, "Git By Example")
-    c.drawRightString(PAGE_W - MARGIN_RIGHT, PAGE_H - MARGIN_TOP + 7 * mm,
-                      "Dariush Abbasi")
-
-    # Bottom line
-    c.line(MARGIN_LEFT, MARGIN_BOTTOM - 5 * mm,
-           PAGE_W - MARGIN_RIGHT, MARGIN_BOTTOM - 5 * mm)
-
-    # Page number
-    c.setFont("Helvetica", 8)
-    c.setFillColor(CLR_TEXT_LIGHT)
-    c.drawCentredString(PAGE_W / 2, MARGIN_BOTTOM - 10 * mm, str(doc.page))
-
-    c.restoreState()
+    def draw(self):
+        self.canv.drawImage(self.path, -ML, -MB, width=PAGE_W, height=PAGE_H,
+                            preserveAspectRatio=True, anchor="c", mask="auto")
 
 
-def page_background_blank(canvas_obj, doc):
-    """No header/footer (for title page, part dividers)."""
-    pass
+class AccentBar(Flowable):
+    def __init__(self, color):
+        super().__init__()
+        self.color = color; self.height = 4
+    def wrap(self, aw, ah): return (50*mm, 4)
+    def draw(self):
+        self.canv.setFillColor(self.color)
+        self.canv.rect(0,0,50*mm,3,fill=1,stroke=0)
 
 
-# ---------------------------------------------------------------------------
-# Markdown → Flowables converter
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# Page decorations
+# ═══════════════════════════════════════════════════════════════════════════
 
-def make_styles():
-    """Create the paragraph styles used throughout the book."""
-    return {
-        "body": ParagraphStyle(
-            "body", fontName="Helvetica", fontSize=9.5,
-            leading=15, textColor=CLR_TEXT, spaceAfter=6,
-            spaceBefore=2
-        ),
-        "h1": ParagraphStyle(
-            "h1", fontName="Helvetica-Bold", fontSize=22,
-            leading=28, textColor=CLR_TEXT, spaceAfter=8,
-            spaceBefore=16
-        ),
-        "h2": ParagraphStyle(
-            "h2", fontName="Helvetica-Bold", fontSize=14,
-            leading=20, textColor=CLR_TEXT, spaceAfter=6,
-            spaceBefore=14
-        ),
-        "h3": ParagraphStyle(
-            "h3", fontName="Helvetica-Bold", fontSize=11,
-            leading=16, textColor=CLR_ACCENT, spaceAfter=4,
-            spaceBefore=10
-        ),
-        "h4": ParagraphStyle(
-            "h4", fontName="Helvetica-Bold", fontSize=10,
-            leading=14, textColor=CLR_TEXT, spaceAfter=4,
-            spaceBefore=8
-        ),
-        "inline_code": ParagraphStyle(
-            "inline_code", fontName="Courier", fontSize=8.5,
-            leading=13, textColor=CLR_TEXT, backColor=HexColor("#eef0f5"),
-        ),
-        "blockquote": ParagraphStyle(
-            "blockquote", fontName="Helvetica-Oblique", fontSize=10,
-            leading=15, textColor=CLR_TEXT_LIGHT, leftIndent=12 * mm,
-            borderPadding=4, spaceAfter=8, spaceBefore=8
-        ),
-        "li": ParagraphStyle(
-            "li", fontName="Helvetica", fontSize=9.5,
-            leading=14, textColor=CLR_TEXT, leftIndent=8 * mm,
-            bulletIndent=3 * mm, spaceAfter=3,
-        ),
-    }
+def _pg_normal(T):
+    def fn(cv, doc):
+        cv.saveState()
+        if str(T["page_bg"]) != str(_hx("#FFFFFF")):
+            cv.setFillColor(T["page_bg"]); cv.rect(0,0,PAGE_W,PAGE_H,fill=1,stroke=0)
+        cv.setStrokeColor(T["border"]); cv.setLineWidth(0.4)
+        cv.line(ML, PAGE_H-MT+5*mm, PAGE_W-MR, PAGE_H-MT+5*mm)
+        cv.setFont("Inter", 7); cv.setFillColor(T["text2"])
+        cv.drawString(ML, PAGE_H-MT+7*mm, "Git By Example")
+        cv.drawRightString(PAGE_W-MR, PAGE_H-MT+7*mm, "Dariush Abbasi")
+        cv.line(ML, MB-5*mm, PAGE_W-MR, MB-5*mm)
+        cv.setFont("Inter", 8); cv.setFillColor(T["text2"])
+        cv.drawCentredString(PAGE_W/2, MB-10*mm, str(doc.page))
+        cv.restoreState()
+    return fn
+
+def _pg_blank(T):
+    def fn(cv, doc):
+        cv.saveState()
+        if str(T["page_bg"]) != str(_hx("#FFFFFF")):
+            cv.setFillColor(T["page_bg"]); cv.rect(0,0,PAGE_W,PAGE_H,fill=1,stroke=0)
+        cv.restoreState()
+    return fn
+
+def _pg_cover(T):
+    def fn(cv, doc): pass
+    return fn
 
 
-def inline_format(text):
-    """Convert markdown inline formatting to ReportLab XML."""
-    # Bold + italic
+# ═══════════════════════════════════════════════════════════════════════════
+# Markdown → Flowables
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _hex_s(c):
+    """Convert a reportlab Color to a hex string."""
+    try:
+        r, g, b = int(c.red*255), int(c.green*255), int(c.blue*255)
+        return "#%02x%02x%02x" % (r, g, b)
+    except Exception:
+        return str(c)
+
+def ifmt(text, T):
     text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i>\1</i></b>', text)
-    # Bold
     text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    # Italic
     text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    # Inline code
+    fg = _hex_s(T["ic_fg"])
     text = re.sub(r'`([^`]+)`',
-                  r'<font face="Courier" size="8" color="#5b21b6">\1</font>', text)
-    # Links — just show text
+                  rf'<font face="Plex" size="8" color="{fg}">\1</font>', text)
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'<u>\1</u>', text)
-    # Escape XML-sensitive characters that aren't already tags
-    # (We can't blindly escape because we've added XML tags above)
     return text
 
+def _styles(T):
+    return dict(
+        body = ParagraphStyle("body", fontName="Inter", fontSize=9.5,
+                              leading=15, textColor=T["text"], spaceAfter=6, spaceBefore=2),
+        h2   = ParagraphStyle("h2", fontName="Inter-B", fontSize=14,
+                              leading=20, textColor=T["heading"], spaceAfter=6, spaceBefore=14),
+        h3   = ParagraphStyle("h3", fontName="Inter-B", fontSize=11,
+                              leading=16, textColor=T["h3"], spaceAfter=4, spaceBefore=10),
+        h4   = ParagraphStyle("h4", fontName="Inter-B", fontSize=10,
+                              leading=14, textColor=T["heading"], spaceAfter=4, spaceBefore=8),
+        bq   = ParagraphStyle("bq", fontName="Inter-I", fontSize=10,
+                              leading=15, textColor=T["text2"], leftIndent=12*mm,
+                              spaceAfter=8, spaceBefore=8),
+        li   = ParagraphStyle("li", fontName="Inter", fontSize=9.5,
+                              leading=14, textColor=T["text"], leftIndent=8*mm,
+                              bulletIndent=3*mm, spaceAfter=3),
+    )
 
-def md_to_flowables(md_text, styles, chapter_num=None):
-    """Convert a markdown string into a list of ReportLab flowables."""
-    flowables = []
-    lines = md_text.split("\n")
-    i = 0
-    first_h1 = True
-
+def md2fl(md, S, T, chnum=None):
+    fl = []; lines = md.split("\n"); i = 0; first_h1 = True
     while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-
-        # Skip navigation links at bottom of chapters
-        if stripped.startswith("[←") or stripped.startswith("[Next:"):
-            i += 1
-            continue
-
-        # Horizontal rule
-        if stripped in ("---", "***", "___"):
-            flowables.append(Spacer(1, 6 * mm))
-            i += 1
-            continue
-
-        # Empty line
-        if not stripped:
-            i += 1
-            continue
-
+        ln = lines[i]; st = ln.strip()
+        if st.startswith("[←") or st.startswith("[Next:"):
+            i+=1; continue
+        if st in ("---","***","___"):
+            fl.append(Spacer(1,6*mm)); i+=1; continue
+        if not st:
+            i+=1; continue
         # Headings
-        if stripped.startswith("#"):
-            level = len(stripped.split()[0])  # count #'s
-            title = stripped.lstrip("#").strip()
-
-            if level == 1 and first_h1:
-                # Chapter title — use custom header
+        if st.startswith("#"):
+            lv = len(st.split()[0]); title = st.lstrip("#").strip()
+            if lv == 1 and first_h1:
                 first_h1 = False
-                num_label = f"Chapter {chapter_num}" if chapter_num else ""
-                flowables.append(ChapterHeader(num_label, title.split("—", 1)[-1].strip() if "—" in title else title))
-                flowables.append(Spacer(1, 4 * mm))
-                i += 1
-                continue
-
-            style_key = f"h{min(level, 4)}"
-            flowables.append(Paragraph(inline_format(title), styles[style_key]))
-            i += 1
-            continue
-
-        # Code blocks
-        if stripped.startswith("```"):
-            language = stripped[3:].strip()
-            code_lines = []
-            i += 1
+                nl = f"Chapter {chnum}" if chnum else ""
+                dt = title.split("—",1)[-1].strip() if "—" in title else title
+                fl.append(ChapterHeader(nl, dt, T)); fl.append(Spacer(1,4*mm))
+                i+=1; continue
+            sk = {2:"h2",3:"h3"}.get(lv,"h4")
+            fl.append(Paragraph(ifmt(title,T), S[sk])); i+=1; continue
+        # Code
+        if st.startswith("```"):
+            lang = st[3:].strip(); cl = []; i+=1
             while i < len(lines) and not lines[i].strip().startswith("```"):
-                code_lines.append(lines[i])
-                i += 1
-            i += 1  # skip closing ```
-            code_text = "\n".join(code_lines)
-            flowables.append(Spacer(1, 2 * mm))
-            flowables.append(CodeBlock(code_text, language))
-            flowables.append(Spacer(1, 3 * mm))
-            continue
-
-        # Blockquotes
-        if stripped.startswith(">"):
-            quote_lines = []
+                cl.append(lines[i]); i+=1
+            i+=1
+            fl.append(Spacer(1,2*mm))
+            fl.append(CodeBlock("\n".join(cl), lang, T))
+            fl.append(Spacer(1,3*mm)); continue
+        # Blockquote
+        if st.startswith(">"):
+            ql = []
             while i < len(lines) and lines[i].strip().startswith(">"):
-                quote_lines.append(lines[i].strip().lstrip(">").strip())
-                i += 1
-            quote_text = " ".join(quote_lines)
-            flowables.append(Spacer(1, 2 * mm))
-            flowables.append(Paragraph(inline_format(quote_text), styles["blockquote"]))
-            flowables.append(Spacer(1, 2 * mm))
-            continue
-
-        # Tip boxes (🧠 What happened?)
-        if "🧠" in stripped or stripped.startswith("🧠"):
-            tip_text = stripped.replace("🧠", "").strip()
-            # Remove bold markers from "What happened?"
-            tip_text = tip_text.replace("**What happened?**", "<b>What happened?</b>")
-            tip_text = inline_format(tip_text)
-            flowables.append(TipBox(tip_text, kind="tip"))
-            flowables.append(Spacer(1, 3 * mm))
-            i += 1
-            continue
-
-        # Warning boxes
-        if stripped.startswith("⚠️") or stripped.startswith("⚠"):
-            warn_text = stripped.replace("⚠️", "").replace("⚠", "").strip()
-            warn_text = warn_text.replace("**Warning**:", "<b>Warning</b>:")
-            warn_text = warn_text.replace("**Warning:**", "<b>Warning:</b>")
-            warn_text = inline_format(warn_text)
-            flowables.append(TipBox(warn_text, kind="warning"))
-            flowables.append(Spacer(1, 3 * mm))
-            i += 1
-            continue
-
-        # Unordered list items
-        if stripped.startswith("- ") or stripped.startswith("* "):
-            text = stripped[2:]
-            flowables.append(
-                Paragraph("• " + inline_format(text), styles["li"])
-            )
-            i += 1
-            continue
-
-        # Ordered list items
-        m = re.match(r'^(\d+)\.\s+(.*)', stripped)
+                ql.append(lines[i].strip().lstrip(">").strip()); i+=1
+            fl.append(Spacer(1,2*mm))
+            fl.append(Paragraph(ifmt(" ".join(ql),T), S["bq"]))
+            fl.append(Spacer(1,2*mm)); continue
+        # Tips
+        if "🧠" in st:
+            t = st.replace("🧠","").replace("**What happened?**","").strip()
+            fl.append(TipBox(ifmt(t,T), "tip", T)); fl.append(Spacer(1,3*mm))
+            i+=1; continue
+        # Warnings
+        if st.startswith("⚠️") or st.startswith("⚠"):
+            t = st.replace("⚠️","").replace("⚠","").strip()
+            t = t.replace("**Warning**:","").replace("**Warning:**","").strip()
+            fl.append(TipBox(ifmt(t,T), "warning", T)); fl.append(Spacer(1,3*mm))
+            i+=1; continue
+        # Lists
+        if st.startswith("- ") or st.startswith("* "):
+            fl.append(Paragraph("• "+ifmt(st[2:],T), S["li"])); i+=1; continue
+        m = re.match(r'^(\d+)\.\s+(.*)', st)
         if m:
-            num = m.group(1)
-            text = m.group(2)
-            flowables.append(
-                Paragraph(f"{num}. " + inline_format(text), styles["li"])
-            )
-            i += 1
-            continue
-
-        # Tables (simple rendering)
-        if "|" in stripped and stripped.startswith("|"):
-            table_rows = []
+            fl.append(Paragraph(f"{m.group(1)}. "+ifmt(m.group(2),T), S["li"]))
+            i+=1; continue
+        # Tables
+        if "|" in st and st.startswith("|"):
+            rows = []
             while i < len(lines) and lines[i].strip().startswith("|"):
-                row = lines[i].strip()
-                # Skip separator rows
-                if re.match(r'^\|[\s\-:|]+\|$', row):
-                    i += 1
-                    continue
-                cells = [c.strip() for c in row.split("|")[1:-1]]
-                table_rows.append(cells)
-                i += 1
-
-            if table_rows:
-                # Build reportlab table
-                col_count = max(len(r) for r in table_rows)
-                # Pad rows to same length
-                for r in table_rows:
-                    while len(r) < col_count:
-                        r.append("")
-
-                cell_style = ParagraphStyle("cell", fontName="Helvetica", fontSize=8,
-                                             leading=11, textColor=CLR_TEXT)
-                cell_style_h = ParagraphStyle("cellh", fontName="Helvetica-Bold", fontSize=8,
-                                               leading=11, textColor=CLR_TEXT)
-
-                data = []
-                for ri, row in enumerate(table_rows):
-                    st = cell_style_h if ri == 0 else cell_style
-                    data.append([Paragraph(inline_format(c), st) for c in row])
-
-                avail_w = PAGE_W - MARGIN_LEFT - MARGIN_RIGHT
-                col_w = avail_w / col_count
-                t = Table(data, colWidths=[col_w] * col_count)
-                t.setStyle(TableStyle([
-                    ("BACKGROUND", (0, 0), (-1, 0), HexColor("#e8ecf2")),
-                    ("GRID", (0, 0), (-1, -1), 0.4, CLR_BORDER),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4 * mm),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4 * mm),
-                    ("TOPPADDING", (0, 0), (-1, -1), 2 * mm),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
+                r = lines[i].strip()
+                if re.match(r'^\|[\s\-:|]+\|$', r): i+=1; continue
+                rows.append([c.strip() for c in r.split("|")[1:-1]]); i+=1
+            if rows:
+                nc = max(len(r) for r in rows)
+                for r in rows:
+                    while len(r)<nc: r.append("")
+                cs = ParagraphStyle("c",fontName="Inter",fontSize=8,leading=11,textColor=T["text"])
+                ch = ParagraphStyle("ch",fontName="Inter-B",fontSize=8,leading=11,textColor=T["text"])
+                data = [[Paragraph(ifmt(c,T), ch if ri==0 else cs) for c in row]
+                        for ri,row in enumerate(rows)]
+                cw = CW/nc
+                tb = Table(data, colWidths=[cw]*nc)
+                tb.setStyle(TableStyle([
+                    ("BACKGROUND",(0,0),(-1,0),T["tbl_hdr"]),
+                    ("GRID",(0,0),(-1,-1),0.4,T["tbl_brd"]),
+                    ("VALIGN",(0,0),(-1,-1),"TOP"),
+                    ("LEFTPADDING",(0,0),(-1,-1),4*mm),
+                    ("RIGHTPADDING",(0,0),(-1,-1),4*mm),
+                    ("TOPPADDING",(0,0),(-1,-1),2*mm),
+                    ("BOTTOMPADDING",(0,0),(-1,-1),2*mm),
                 ]))
-                flowables.append(Spacer(1, 2 * mm))
-                flowables.append(t)
-                flowables.append(Spacer(1, 3 * mm))
+                fl.append(Spacer(1,2*mm)); fl.append(tb); fl.append(Spacer(1,3*mm))
             continue
-
-        # Normal paragraph — collect consecutive non-empty, non-special lines
-        para_lines = []
+        # Paragraph
+        pl = []
         while i < len(lines):
             l = lines[i].strip()
             if (not l or l.startswith("#") or l.startswith("```")
-                    or l.startswith(">") or l.startswith("- ") or l.startswith("* ")
-                    or l.startswith("|") or "🧠" in l or l.startswith("⚠")
-                    or l in ("---", "***", "___")
-                    or re.match(r'^\d+\.\s+', l)
-                    or l.startswith("[←") or l.startswith("[Next:")):
-                break
-            para_lines.append(l)
-            i += 1
-        if para_lines:
-            text = " ".join(para_lines)
-            flowables.append(Paragraph(inline_format(text), styles["body"]))
-
-    return flowables
+                or l.startswith(">") or l.startswith("- ") or l.startswith("* ")
+                or l.startswith("|") or "🧠" in l or l.startswith("⚠")
+                or l in ("---","***","___") or re.match(r'^\d+\.\s+',l)
+                or l.startswith("[←") or l.startswith("[Next:")): break
+            pl.append(l); i+=1
+        if pl:
+            fl.append(Paragraph(ifmt(" ".join(pl),T), S["body"]))
+    return fl
 
 
-# ---------------------------------------------------------------------------
-# Title Page
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# TOC
+# ═══════════════════════════════════════════════════════════════════════════
 
-def build_title_page():
-    """Return flowables for the title page."""
-    flowables = []
-
-    flowables.append(Spacer(1, 60 * mm))
-
-    # Title
-    title_style = ParagraphStyle(
-        "title", fontName="Helvetica-Bold", fontSize=36,
-        leading=42, textColor=CLR_TEXT, alignment=TA_LEFT
-    )
-    flowables.append(Paragraph("Git By<br/>Example", title_style))
-
-    flowables.append(Spacer(1, 6 * mm))
-
-    # Accent bar
-    class AccentBar(Flowable):
-        def __init__(self):
-            super().__init__()
-            self.height = 4
-        def wrap(self, aw, ah):
-            return (60 * mm, 4)
-        def draw(self):
-            self.canv.setFillColor(CLR_ACCENT)
-            self.canv.rect(0, 0, 60 * mm, 3, fill=1, stroke=0)
-
-    flowables.append(AccentBar())
-    flowables.append(Spacer(1, 8 * mm))
-
-    # Subtitle
-    sub_style = ParagraphStyle(
-        "subtitle", fontName="Helvetica", fontSize=13,
-        leading=19, textColor=CLR_TEXT_LIGHT
-    )
-    flowables.append(Paragraph(
-        "A practical guide to Git — learn by doing,<br/>not by reading manuals.",
-        sub_style
-    ))
-
-    flowables.append(Spacer(1, 40 * mm))
-
-    # Author
-    author_style = ParagraphStyle(
-        "author", fontName="Helvetica", fontSize=12,
-        leading=16, textColor=CLR_TEXT
-    )
-    flowables.append(Paragraph("<b>Dariush Abbasi</b>", author_style))
-
-    flowables.append(Spacer(1, 4 * mm))
-
-    # Date
-    date_style = ParagraphStyle(
-        "date", fontName="Helvetica", fontSize=9,
-        leading=13, textColor=CLR_TEXT_LIGHT
-    )
-    date_str = datetime.datetime.now().strftime("%B %Y")
-    flowables.append(Paragraph(date_str, date_style))
-
-    flowables.append(Spacer(1, 6 * mm))
-
-    # URL
-    url_style = ParagraphStyle(
-        "url", fontName="Courier", fontSize=8,
-        leading=12, textColor=CLR_ACCENT
-    )
-    flowables.append(Paragraph("github.com/boringcollege/git-by-example", url_style))
-
-    flowables.append(PageBreak())
-    return flowables
-
-
-# ---------------------------------------------------------------------------
-# Table of Contents page
-# ---------------------------------------------------------------------------
-
-def build_toc_page(styles):
-    """Build a manual table of contents."""
-    flowables = []
-
-    flowables.append(Spacer(1, 10 * mm))
-
-    toc_title = ParagraphStyle(
-        "toc_title", fontName="Helvetica-Bold", fontSize=20,
-        leading=26, textColor=CLR_TEXT, spaceAfter=8 * mm
-    )
-    flowables.append(Paragraph("Table of Contents", toc_title))
-
-    part_style = ParagraphStyle(
-        "toc_part", fontName="Helvetica-Bold", fontSize=10,
-        leading=16, textColor=CLR_ACCENT, spaceBefore=6 * mm, spaceAfter=2 * mm
-    )
-    chapter_style = ParagraphStyle(
-        "toc_chapter", fontName="Helvetica", fontSize=9.5,
-        leading=16, textColor=CLR_TEXT, leftIndent=5 * mm
-    )
-
-    chapter_num = 0
-    for filepath, part_name in CHAPTERS:
-        if part_name:
-            flowables.append(Paragraph(part_name, part_style))
-
-        fname = os.path.basename(filepath)
-        if fname.startswith(("0", "1", "2")):
-            chapter_num += 1
-            # Extract title from filename
-            title = fname.replace(".md", "").split("-", 1)[1].replace("-", " ").title()
-            flowables.append(
-                Paragraph(f"{chapter_num}. &nbsp; {title}", chapter_style)
-            )
+def build_toc(T):
+    fl = [Spacer(1,10*mm)]
+    fl.append(Paragraph("Table of Contents",
+        ParagraphStyle("tt",fontName="Inter-B",fontSize=20,leading=26,
+                       textColor=T["heading"],spaceAfter=8*mm)))
+    ps = ParagraphStyle("tp",fontName="Inter-B",fontSize=10,leading=16,
+                        textColor=T["accent"],spaceBefore=6*mm,spaceAfter=2*mm)
+    cs = ParagraphStyle("tc",fontName="Inter",fontSize=9.5,leading=16,
+                        textColor=T["text"],leftIndent=5*mm)
+    cn = 0
+    for fp, part in CHAPTERS:
+        if part: fl.append(Paragraph(part, ps))
+        fn = os.path.basename(fp)
+        if fn[0].isdigit():
+            cn += 1
+            t = fn.replace(".md","").split("-",1)[1].replace("-"," ").title()
+            fl.append(Paragraph(f"{cn}. &nbsp; {t}", cs))
         else:
-            title = fname.replace(".md", "").replace("-", " ").title()
-            flowables.append(
-                Paragraph(f"&nbsp;&nbsp;&nbsp; {title}", chapter_style)
-            )
-
-    flowables.append(PageBreak())
-    return flowables
+            t = fn.replace(".md","").replace("-"," ").title()
+            fl.append(Paragraph(f"&nbsp;&nbsp;&nbsp; {t}", cs))
+    fl.append(PageBreak())
+    return fl
 
 
-# ---------------------------------------------------------------------------
-# Main build function
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# Build
+# ═══════════════════════════════════════════════════════════════════════════
 
-def build_pdf(output_path):
-    """Build the complete PDF."""
-    # Find repo root (script is in scripts/)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.dirname(script_dir)
+def build_pdf(output, dark=False):
+    setup_fonts()
+    T = theme(dark)
+    mode = "dark" if dark else "light"
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cover = os.path.join(root, "cover.png")
 
-    # Create document
-    doc = BaseDocTemplate(
-        output_path,
-        pagesize=A4,
-        leftMargin=MARGIN_LEFT,
-        rightMargin=MARGIN_RIGHT,
-        topMargin=MARGIN_TOP,
-        bottomMargin=MARGIN_BOTTOM,
-        title="Git By Example",
-        author="Dariush Abbasi",
-        subject="A practical guide to Git",
-    )
+    doc = BaseDocTemplate(output, pagesize=A4,
+        leftMargin=ML, rightMargin=MR, topMargin=MT, bottomMargin=MB,
+        title="Git By Example", author="Dariush Abbasi",
+        subject="A practical guide to Git")
 
-    # Page templates
-    frame_normal = Frame(
-        MARGIN_LEFT, MARGIN_BOTTOM,
-        PAGE_W - MARGIN_LEFT - MARGIN_RIGHT,
-        PAGE_H - MARGIN_TOP - MARGIN_BOTTOM,
-        id="normal"
-    )
-    frame_title = Frame(
-        MARGIN_LEFT, MARGIN_BOTTOM,
-        PAGE_W - MARGIN_LEFT - MARGIN_RIGHT,
-        PAGE_H - MARGIN_TOP - MARGIN_BOTTOM,
-        id="title"
-    )
-
+    fr = Frame(ML, MB, CW, PAGE_H-MT-MB, id="main")
+    fr_cover = Frame(0, 0, PAGE_W, PAGE_H, id="cover",
+                     leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     doc.addPageTemplates([
-        PageTemplate(id="blank", frames=frame_title, onPage=page_background_blank),
-        PageTemplate(id="normal", frames=frame_normal, onPage=page_background_normal),
+        PageTemplate(id="cover",  frames=fr_cover, onPage=_pg_cover(T)),
+        PageTemplate(id="blank",  frames=fr,       onPage=_pg_blank(T)),
+        PageTemplate(id="normal", frames=fr,       onPage=_pg_normal(T)),
     ])
 
-    styles = make_styles()
-    story = []
+    S = _styles(T); story = []
 
-    # Title page (uses blank template)
-    story.append(NextPageTemplate("blank"))
-    story.extend(build_title_page())
+    # Cover
+    if os.path.exists(cover):
+        story.append(NextPageTemplate("cover"))
+        story.append(CoverImage(cover))
+        story.append(NextPageTemplate("blank"))
+        story.append(PageBreak())
+    else:
+        print(f"  ⚠  cover.png not found, using text title")
+        story.append(NextPageTemplate("blank"))
 
-    # TOC (switch to normal template)
+    # Title info page
+    story.append(Spacer(1,50*mm))
+    story.append(Paragraph("Git By Example",
+        ParagraphStyle("t",fontName="Inter-B",fontSize=32,leading=38,textColor=T["heading"])))
+    story.append(Spacer(1,5*mm))
+    story.append(AccentBar(T["accent"]))
+    story.append(Spacer(1,8*mm))
+    story.append(Paragraph("A practical guide to Git — learn by doing,<br/>not by reading manuals.",
+        ParagraphStyle("s",fontName="Inter",fontSize=12,leading=18,textColor=T["text2"])))
+    story.append(Spacer(1,35*mm))
+    story.append(Paragraph("Dariush Abbasi",
+        ParagraphStyle("a",fontName="Inter-B",fontSize=12,leading=16,textColor=T["text"])))
+    story.append(Spacer(1,3*mm))
+    story.append(Paragraph(datetime.datetime.now().strftime("%B %Y"),
+        ParagraphStyle("d",fontName="Inter",fontSize=9,leading=13,textColor=T["text2"])))
+    story.append(Spacer(1,5*mm))
+    story.append(Paragraph("github.com/boringcollege/git-by-example",
+        ParagraphStyle("u",fontName="Plex",fontSize=8,leading=12,textColor=T["accent"])))
+    story.append(Spacer(1,4*mm))
+    story.append(Paragraph(f"{mode.capitalize()} Edition",
+        ParagraphStyle("m",fontName="Inter",fontSize=8,leading=12,textColor=T["text2"])))
+    story.append(PageBreak())
+
+    # TOC
     story.append(NextPageTemplate("normal"))
-    story.extend(build_toc_page(styles))
+    story.extend(build_toc(T))
 
     # Chapters
-    chapter_num = 0
-    for filepath, part_name in CHAPTERS:
-        full_path = os.path.join(repo_root, filepath)
-        if not os.path.exists(full_path):
-            print(f"  ⚠ Skipping {filepath} (not found)")
-            continue
-
-        # Part divider
-        if part_name:
+    cn = 0
+    for fp, pn in CHAPTERS:
+        full = os.path.join(root, fp)
+        if not os.path.exists(full):
+            print(f"  ⚠  {fp} not found"); continue
+        if pn:
             story.append(NextPageTemplate("blank"))
             story.append(PageBreak())
-            story.append(PartDivider(part_name))
+            story.append(PartDivider(pn, T))
             story.append(NextPageTemplate("normal"))
             story.append(PageBreak())
-
-        fname = os.path.basename(filepath)
-        is_chapter = fname[0].isdigit()
-        if is_chapter:
-            chapter_num += 1
-
-        with open(full_path, "r", encoding="utf-8") as f:
-            md_text = f.read()
-
-        ch_num = chapter_num if is_chapter else None
-        flowables = md_to_flowables(md_text, styles, chapter_num=ch_num)
-        story.extend(flowables)
+        fn = os.path.basename(fp)
+        is_ch = fn[0].isdigit()
+        if is_ch: cn += 1
+        with open(full, "r", encoding="utf-8") as f:
+            md = f.read()
+        story.extend(md2fl(md, S, T, chnum=cn if is_ch else None))
         story.append(PageBreak())
 
-    # Build
-    print(f"  Building {output_path} ...")
+    print(f"  Building {output} ({mode}) ...")
     doc.build(story)
-    print(f"  ✅ Done! {os.path.getsize(output_path) / 1024:.0f} KB")
+    print(f"  ✅  {output}  ({os.path.getsize(output)/1024:.0f} KB)")
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    output = sys.argv[1] if len(sys.argv) > 1 else "gitbyexample.pdf"
-    build_pdf(output)
+    args = sys.argv[1:]
+    both = "--both" in args
+    dk = "--dark" in args
+    name = next((a for a in args if not a.startswith("--")), "gitbyexample")
+
+    if both:
+        b = name.replace(".pdf","")
+        build_pdf(f"{b}-light.pdf", dark=False)
+        build_pdf(f"{b}-dark.pdf",  dark=True)
+    elif dk:
+        out = name if name.endswith(".pdf") else f"{name}.pdf"
+        build_pdf(out, dark=True)
+    else:
+        out = name if name.endswith(".pdf") else f"{name}.pdf"
+        build_pdf(out, dark=False)
