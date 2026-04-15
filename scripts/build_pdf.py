@@ -347,16 +347,17 @@ class ChapterHeader(Flowable):
 
 
 class CoverImage(Flowable):
+    """Placeholder flowable that triggers a page — the actual image is drawn by the page template."""
     def __init__(self, path):
         super().__init__()
-        self.path = path; self.height = PAGE_H
+        self.path = path
+        self.height = 1  # minimal height, actual drawing is in onPage
 
     def wrap(self, aw, ah):
-        return (PAGE_W, PAGE_H)
+        return (aw, 1)
 
     def draw(self):
-        self.canv.drawImage(self.path, -ML, -MB, width=PAGE_W, height=PAGE_H,
-                            preserveAspectRatio=True, anchor="c", mask="auto")
+        pass  # drawn by _pg_cover_with_image instead
 
 
 class AccentBar(Flowable):
@@ -397,8 +398,11 @@ def _pg_blank(T):
         cv.restoreState()
     return fn
 
-def _pg_cover(T):
-    def fn(cv, doc): pass
+def _pg_cover(T, image_path=None):
+    def fn(cv, doc):
+        if image_path and os.path.exists(image_path):
+            cv.drawImage(image_path, 0, 0, width=PAGE_W, height=PAGE_H,
+                         preserveAspectRatio=False, mask="auto")
     return fn
 
 
@@ -590,7 +594,7 @@ def build_pdf(output, dark=False):
     fr_cover = Frame(0, 0, PAGE_W, PAGE_H, id="cover",
                      leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     doc.addPageTemplates([
-        PageTemplate(id="cover",  frames=fr_cover, onPage=_pg_cover(T)),
+        PageTemplate(id="cover",  frames=fr_cover, onPage=_pg_cover(T, cover if os.path.exists(cover) else None)),
         PageTemplate(id="blank",  frames=fr,       onPage=_pg_blank(T)),
         PageTemplate(id="normal", frames=fr,       onPage=_pg_normal(T)),
     ])
