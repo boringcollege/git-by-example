@@ -2,8 +2,7 @@ name: Build PDF
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
 
 permissions:
   contents: write
@@ -16,7 +15,6 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - name: Set up Python
@@ -35,18 +33,18 @@ jobs:
       - name: Convert Inter fonts (OTF to TTF for ReportLab)
         run: python scripts/convert_fonts.py
 
-      - name: Get tag name
+      - name: Get short commit hash
         id: vars
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+        run: echo "short_sha=$(git rev-parse --short=6 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build both PDFs
-        run: python scripts/build_pdf.py "gitbyexample-${{ steps.vars.outputs.tag }}" --both
+        run: python scripts/build_pdf.py "gitbyexample-${{ steps.vars.outputs.short_sha }}" --both
 
       - name: Publish to pdf branch
         run: |
-          TAG="${{ steps.vars.outputs.tag }}"
-          LIGHT="gitbyexample-${TAG}-light.pdf"
-          DARK="gitbyexample-${TAG}-dark.pdf"
+          SHORT="${{ steps.vars.outputs.short_sha }}"
+          LIGHT="gitbyexample-${SHORT}-light.pdf"
+          DARK="gitbyexample-${SHORT}-dark.pdf"
 
           cp "$LIGHT" /tmp/
           cp "$DARK" /tmp/
@@ -74,13 +72,13 @@ jobs:
             "" \
             "This branch contains auto-generated PDF builds of the book." \
             "" \
-            "Each tag produces two PDFs:" \
-            "- gitbyexample-TAG-light.pdf" \
-            "- gitbyexample-TAG-dark.pdf" \
+            "Each push to main produces two PDFs:" \
+            "- gitbyexample-COMMIT-light.pdf" \
+            "- gitbyexample-COMMIT-dark.pdf" \
             "" \
             "Download the latest: check the most recent file below." \
             > README.md
 
           git add README.md gitbyexample-*.pdf
-          git commit -m "pdf: build from ${TAG}" || echo "No changes to commit"
+          git commit -m "pdf: build from ${GITHUB_SHA::6}" || echo "No changes to commit"
           git push origin pdf
