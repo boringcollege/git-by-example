@@ -1,0 +1,75 @@
+name: Build PDF
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build-pdf:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install reportlab markdown beautifulsoup4 Pygments
+
+      - name: Get short commit hash
+        id: vars
+        run: echo "short_sha=$(git rev-parse --short=6 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build PDF
+        run: python scripts/build_pdf.py "gitbyexample-${{ steps.vars.outputs.short_sha }}.pdf"
+
+      - name: Publish to pdf branch
+        run: |
+          PDF_FILE="gitbyexample-${{ steps.vars.outputs.short_sha }}.pdf"
+
+          # Save the PDF outside the working tree
+          cp "$PDF_FILE" /tmp/"$PDF_FILE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Switch to pdf branch (fetch existing or create orphan)
+          if git ls-remote --heads origin pdf | grep -q pdf; then
+            git fetch origin pdf
+            git checkout pdf
+          else
+            git checkout --orphan pdf
+            git rm -rf . 2>/dev/null || true
+            git clean -fd
+          fi
+
+          # Copy the new PDF in
+          cp /tmp/"$PDF_FILE" .
+
+          # Clean old PDFs, keep last 10
+          ls -t gitbyexample-*.pdf 2>/dev/null | tail -n +11 | xargs -r rm -f
+
+          # Write README for the pdf branch
+          cat > README.md << 'EOF'
+          # Git By Example — PDF Builds
+
+          This branch contains auto-generated PDF builds of the book.
+
+          Each push to `main` produces a new PDF named `gitbyexample-<commit>.pdf`.
+
+          📥 **Download the latest**: check the most recent file below.
+          EOF
+          sed -i 's/^          //' README.md
+
+          git add README.md gitbyexample-*.pdf
+          git commit -m "pdf: build from ${GITHUB_SHA::6}" || echo "No changes to commit"
+          git push origin pdf
