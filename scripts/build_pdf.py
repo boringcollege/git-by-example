@@ -87,13 +87,10 @@ def setup_fonts():
     registerFontFamily("Inter", normal="Inter", bold="Inter-B",
                        italic="Inter-I", boldItalic="Inter-BI")
 
-    pd = "/usr/share/fonts/truetype/ibm-plex"
-    if not os.path.isdir(pd):
-        pd = sd
-    pdfmetrics.registerFont(TTFont("Plex",    os.path.join(pd, "IBMPlexMono-Regular.ttf")))
-    pdfmetrics.registerFont(TTFont("Plex-B",  os.path.join(pd, "IBMPlexMono-Bold.ttf")))
-    pdfmetrics.registerFont(TTFont("Plex-I",  os.path.join(pd, "IBMPlexMono-Italic.ttf")))
-    pdfmetrics.registerFont(TTFont("Plex-BI", os.path.join(pd, "IBMPlexMono-BoldItalic.ttf")))
+    pdfmetrics.registerFont(TTFont("Plex",    os.path.join(sd, "IBMPlexMono-Regular.ttf")))
+    pdfmetrics.registerFont(TTFont("Plex-B",  os.path.join(sd, "IBMPlexMono-Bold.ttf")))
+    pdfmetrics.registerFont(TTFont("Plex-I",  os.path.join(sd, "IBMPlexMono-Italic.ttf")))
+    pdfmetrics.registerFont(TTFont("Plex-BI", os.path.join(sd, "IBMPlexMono-BoldItalic.ttf")))
     registerFontFamily("Plex", normal="Plex", bold="Plex-B",
                        italic="Plex-I", boldItalic="Plex-BI")
 
@@ -204,6 +201,7 @@ def tokenize(code, lang):
 
 class CodeBlock(Flowable):
     FS = 7.8; LH = 12; PAD = 8*mm
+    MAX_LINES = 45  # max lines per block before splitting
 
     def __init__(self, code, lang="", T=None):
         super().__init__()
@@ -240,6 +238,20 @@ class CodeBlock(Flowable):
                 cc += len(txt)
                 if cc >= mx: break
             y -= self.LH
+
+
+def make_code_blocks(code, lang, T):
+    """Split a code string into one or more CodeBlock flowables that fit on a page."""
+    lines = code.rstrip("\n").split("\n")
+    limit = CodeBlock.MAX_LINES
+    if len(lines) <= limit:
+        return [CodeBlock(code, lang, T)]
+    blocks = []
+    for i in range(0, len(lines), limit):
+        chunk = "\n".join(lines[i:i+limit])
+        # Only show language badge on the first chunk
+        blocks.append(CodeBlock(chunk, lang if i == 0 else "", T))
+    return blocks
 
 
 class TipBox(Flowable):
@@ -438,7 +450,8 @@ def md2fl(md, S, T, chnum=None):
                 cl.append(lines[i]); i+=1
             i+=1
             fl.append(Spacer(1,2*mm))
-            fl.append(CodeBlock("\n".join(cl), lang, T))
+            for cb in make_code_blocks("\n".join(cl), lang, T):
+                fl.append(cb)
             fl.append(Spacer(1,3*mm)); continue
         # Blockquote
         if st.startswith(">"):
@@ -618,11 +631,20 @@ def build_pdf(output, dark=False):
         if is_ch: cn += 1
         with open(full, "r", encoding="utf-8") as f:
             md = f.read()
-        story.extend(md2fl(md, S, T, chnum=cn if is_ch else None))
+        try:
+            chapter_fl = md2fl(md, S, T, chnum=cn if is_ch else None)
+            story.extend(chapter_fl)
+            print(f"  ✓ {fp} ({len(chapter_fl)} flowables)")
+        except Exception as e:
+            print(f"  ✗ {fp} FAILED: {e}")
         story.append(PageBreak())
 
-    print(f"  Building {output} ({mode}) ...")
-    doc.build(story)
+    print(f"  Building {output} ({mode}), {len(story)} total flowables ...")
+    try:
+        doc.build(story)
+    except Exception as e:
+        print(f"  ✗ doc.build FAILED: {e}")
+        raise
     print(f"  ✅  {output}  ({os.path.getsize(output)/1024:.0f} KB)")
 
 

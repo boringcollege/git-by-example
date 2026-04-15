@@ -1,33 +1,35 @@
 #!/usr/bin/env python3
 """
-Convert Inter OTF fonts (CFF outlines) to TTF (TrueType outlines).
+Prepare fonts for the PDF build.
 
-ReportLab cannot read CFF-based OpenType fonts directly. This script
-converts the CFF cubic curves to TrueType quadratic curves and fixes
-the sfntVersion and maxp table so ReportLab accepts them.
+1. Convert Inter OTF (CFF outlines) → TTF (TrueType outlines)
+   because ReportLab cannot read CFF-based OpenType fonts.
 
-Run once before build_pdf.py — idempotent (skips if already converted).
+2. Copy IBM Plex Mono TTF files into scripts/fonts/ so the project
+   is self-contained and works both locally and in CI.
+
+Run once before build_pdf.py — idempotent (skips if already done).
+
+System font packages needed (CI installs these):
+  sudo apt install fonts-inter fonts-ibm-plex
 """
 
 import os
 import sys
+import shutil
 
-def convert_inter_fonts():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    out_dir = os.path.join(script_dir, "fonts")
-    os.makedirs(out_dir, exist_ok=True)
 
-    # Check if already converted
+def ensure_inter(out_dir):
+    """Convert Inter OTF → TTF if not already present."""
     target = os.path.join(out_dir, "Inter-Regular.ttf")
     if os.path.exists(target) and os.path.getsize(target) > 10000:
-        # Quick check: is it actually TrueType?
         with open(target, "rb") as f:
             sig = f.read(4)
         if sig == b'\x00\x01\x00\x00':
-            print("Inter TTF fonts already present, skipping conversion.")
-            return
+            print("  Inter TTF fonts already present, skipping conversion.")
+            return True
 
-    # Find Inter OTF source
+    # Find Inter OTF source (installed via fonts-inter)
     search_dirs = [
         "/usr/share/fonts/opentype/inter",
         "/usr/share/fonts/OTF",
@@ -40,9 +42,10 @@ def convert_inter_fonts():
             break
 
     if src_dir is None:
-        # Try installing
-        print("Inter fonts not found. Install with: sudo apt install fonts-inter")
-        sys.exit(1)
+        print("  ✗ Inter OTF fonts not found.")
+        print("    Install with: sudo apt install fonts-inter")
+        print("    Or download from: https://rsms.me/inter/")
+        return False
 
     from fontTools.ttLib import TTFont
     from fontTools.pens.cu2quPen import Cu2QuPen
@@ -50,14 +53,8 @@ def convert_inter_fonts():
     from fontTools.ttLib.tables._g_l_y_f import table__g_l_y_f
     from fontTools.ttLib.tables._l_o_c_a import table__l_o_c_a
 
-    variants = [
-        "Inter-Regular.otf",
-        "Inter-Bold.otf",
-        "Inter-Italic.otf",
-        "Inter-BoldItalic.otf",
-    ]
-
-    for name in variants:
+    for name in ["Inter-Regular.otf", "Inter-Bold.otf",
+                 "Inter-Italic.otf", "Inter-BoldItalic.otf"]:
         src = os.path.join(src_dir, name)
         out_name = name.replace(".otf", ".ttf")
         dst = os.path.join(out_dir, out_name)
@@ -69,16 +66,14 @@ def convert_inter_fonts():
         print(f"  Converting {name} → {out_name} ...", end=" ", flush=True)
 
         font = TTFont(src)
-
         if "CFF " not in font:
-            print("(no CFF table, copying as-is)")
             font.save(dst)
+            print("(no CFF, copied)")
             continue
 
         gs = font.getGlyphSet()
         glyph_order = font.getGlyphOrder()
 
-        # Convert CFF cubic curves → TrueType quadratic curves
         glyphs = {}
         for gname in glyph_order:
             ttpen = TTGlyphPen(None)
@@ -86,7 +81,6 @@ def convert_inter_fonts():
             gs[gname].draw(cu2qupen)
             glyphs[gname] = ttpen.glyph()
 
-        # Replace CFF with glyf + loca
         glyf_table = table__g_l_y_f()
         glyf_table.glyphs = glyphs
         glyf_table.glyphOrder = glyph_order
@@ -94,12 +88,10 @@ def convert_inter_fonts():
         font["loca"] = table__l_o_c_a()
         font["head"].glyphDataFormat = 0
 
-        # Remove CFF-specific tables
         for tag in ["CFF ", "VORG"]:
             if tag in font:
                 del font[tag]
 
-        # Fix maxp for TrueType (version 1.0 = 0x00010000)
         maxp = font["maxp"]
         maxp.tableVersion = 0x00010000
         for attr, default in [
@@ -114,15 +106,68 @@ def convert_inter_fonts():
                 setattr(maxp, attr, default)
         maxp.recalc(font)
 
-        # Set TrueType sfntVersion
         font.sfntVersion = "\x00\x01\x00\x00"
-
         font.save(dst)
-        size_kb = os.path.getsize(dst) / 1024
-        print(f"OK ({size_kb:.0f} KB)")
+        print(f"OK ({os.path.getsize(dst)/1024:.0f} KB)")
 
-    print("  Done.")
+    return True
+
+
+def ensure_plex_mono(out_dir):
+    """Copy IBM Plex Mono TTFs into fonts dir if not already there."""
+    needed = [
+        "IBMPlexMono-Regular.ttf",
+        "IBMPlexMono-Bold.ttf",
+        "IBMPlexMono-Italic.ttf",
+        "IBMPlexMono-BoldItalic.ttf",
+    ]
+
+    # Check if already present
+    if all(os.path.exists(os.path.join(out_dir, n)) for n in needed):
+        print("  IBM Plex Mono fonts already present, skipping.")
+        return True
+
+    # Find system install (installed via fonts-ibm-plex)
+    search_dirs = [
+        "/usr/share/fonts/truetype/ibm-plex",
+        "/usr/share/fonts/TTF",
+        "/usr/share/fonts/truetype",
+    ]
+    src_dir = None
+    for d in search_dirs:
+        if os.path.exists(os.path.join(d, "IBMPlexMono-Regular.ttf")):
+            src_dir = d
+            break
+
+    if src_dir is None:
+        print("  ✗ IBM Plex Mono fonts not found.")
+        print("    Install with: sudo apt install fonts-ibm-plex")
+        print("    Or download from: https://github.com/IBM/plex/releases")
+        return False
+
+    for name in needed:
+        src = os.path.join(src_dir, name)
+        dst = os.path.join(out_dir, name)
+        if os.path.exists(src):
+            shutil.copy2(src, dst)
+            print(f"  Copied {name}")
+        else:
+            print(f"  ⚠  {name} not found in {src_dir}")
+
+    return True
 
 
 if __name__ == "__main__":
-    convert_inter_fonts()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    out_dir = os.path.join(script_dir, "fonts")
+    os.makedirs(out_dir, exist_ok=True)
+
+    print("Preparing fonts...")
+    ok1 = ensure_inter(out_dir)
+    ok2 = ensure_plex_mono(out_dir)
+
+    if ok1 and ok2:
+        print("All fonts ready ✅")
+    else:
+        print("Some fonts missing — PDF build may fail.")
+        sys.exit(1)
