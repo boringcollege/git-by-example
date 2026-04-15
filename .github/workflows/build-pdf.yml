@@ -16,6 +16,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - name: Set up Python
@@ -31,7 +32,7 @@ jobs:
       - name: Install Python dependencies
         run: pip install reportlab pygments fonttools
 
-      - name: Convert Inter fonts (OTF → TTF for ReportLab)
+      - name: Convert Inter fonts (OTF to TTF for ReportLab)
         run: python scripts/convert_fonts.py
 
       - name: Get tag name
@@ -73,9 +74,9 @@ jobs:
             "" \
             "This branch contains auto-generated PDF builds of the book." \
             "" \
-            "Each push to main produces two PDFs:" \
-            "- gitbyexample-COMMIT-light.pdf — Light edition" \
-            "- gitbyexample-COMMIT-dark.pdf — Dark edition" \
+            "Each tag produces two PDFs:" \
+            "- gitbyexample-TAG-light.pdf" \
+            "- gitbyexample-TAG-dark.pdf" \
             "" \
             "Download the latest: check the most recent file below." \
             > README.md
