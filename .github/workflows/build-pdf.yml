@@ -67,17 +67,17 @@ jobs:
           ls -t gitbyexample-*-light.pdf 2>/dev/null | tail -n +11 | xargs -r rm -f
           ls -t gitbyexample-*-dark.pdf 2>/dev/null | tail -n +11 | xargs -r rm -f
 
-          cat > README.md << 'EOF'
-# Git By Example — PDF Builds
-
-This branch contains auto-generated PDF builds of the book.
-
-Each push to `main` produces two PDFs:
-- `gitbyexample-<commit>-light.pdf` — Light edition
-- `gitbyexample-<commit>-dark.pdf` — Dark edition
-
-📥 **Download the latest**: check the most recent files below.
-EOF
+          printf '%s\n' \
+            "# Git By Example — PDF Builds" \
+            "" \
+            "This branch contains auto-generated PDF builds of the book." \
+            "" \
+            "Each push to main produces two PDFs:" \
+            "- gitbyexample-COMMIT-light.pdf — Light edition" \
+            "- gitbyexample-COMMIT-dark.pdf — Dark edition" \
+            "" \
+            "Download the latest: check the most recent file below." \
+            > README.md
 
           git add README.md gitbyexample-*.pdf
           git commit -m "pdf: build from ${GITHUB_SHA::6}" || echo "No changes to commit"
