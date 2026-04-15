@@ -2,7 +2,8 @@ name: Build PDF
 
 on:
   push:
-    branches: [main]
+    tags:
+      - "v*"
 
 permissions:
   contents: write
@@ -25,7 +26,7 @@ jobs:
       - name: Install system fonts
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq fonts-ibm-plex
+          sudo apt-get install -y -qq fonts-inter fonts-ibm-plex
 
       - name: Install Python dependencies
         run: pip install reportlab pygments fonttools
@@ -33,18 +34,18 @@ jobs:
       - name: Convert Inter fonts (OTF → TTF for ReportLab)
         run: python scripts/convert_fonts.py
 
-      - name: Get short commit hash
+      - name: Get tag name
         id: vars
-        run: echo "short_sha=$(git rev-parse --short=6 HEAD)" >> "$GITHUB_OUTPUT"
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - name: Build both PDFs
-        run: python scripts/build_pdf.py "gitbyexample-${{ steps.vars.outputs.short_sha }}" --both
+        run: python scripts/build_pdf.py "gitbyexample-${{ steps.vars.outputs.tag }}" --both
 
       - name: Publish to pdf branch
         run: |
-          SHORT="${{ steps.vars.outputs.short_sha }}"
-          LIGHT="gitbyexample-${SHORT}-light.pdf"
-          DARK="gitbyexample-${SHORT}-dark.pdf"
+          TAG="${{ steps.vars.outputs.tag }}"
+          LIGHT="gitbyexample-${TAG}-light.pdf"
+          DARK="gitbyexample-${TAG}-dark.pdf"
 
           cp "$LIGHT" /tmp/
           cp "$DARK" /tmp/
@@ -80,5 +81,5 @@ jobs:
             > README.md
 
           git add README.md gitbyexample-*.pdf
-          git commit -m "pdf: build from ${GITHUB_SHA::6}" || echo "No changes to commit"
+          git commit -m "pdf: build from ${TAG}" || echo "No changes to commit"
           git push origin pdf
