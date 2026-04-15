@@ -255,29 +255,49 @@ def make_code_blocks(code, lang, T):
 
 
 class TipBox(Flowable):
+    LABEL_H = 6*mm   # space for the label line
+    PAD_TOP = 5*mm
+    PAD_BOT = 5*mm
+    PAD_LR  = 5*mm
+
     def __init__(self, text, kind="tip", T=None):
         super().__init__()
         self.text = text; self.kind = kind; self.T = T or theme()
 
     def wrap(self, aw, ah):
         self._w = aw; T = self.T
-        s = ParagraphStyle("t", fontName="Inter", fontSize=8.5, leading=13,
-                           textColor=T["text"])
-        self._p = Paragraph(self.text, s)
-        _, ph = self._p.wrap(aw - 14*mm, 10000)
-        self.height = max(ph + 10*mm, 14*mm)
+        self._style = ParagraphStyle("t", fontName="Inter", fontSize=8.5,
+                                     leading=13, textColor=T["text"])
+        self._p = Paragraph(self.text, self._style)
+        text_w = aw - self.PAD_LR * 2
+        _, ph = self._p.wrap(text_w, 10000)
+        self._ph = ph
+        self.height = self.PAD_TOP + self.LABEL_H + ph + self.PAD_BOT
         return (self._w, self.height)
 
     def draw(self):
         c = self.canv; w = self._w; h = self.height; T = self.T
         bg = T["tip_bg"] if self.kind == "tip" else T["warn_bg"]
         ac = T["accent"] if self.kind == "tip" else T["accent2"]
-        c.setFillColor(bg); c.roundRect(0,0,w,h,3*mm,fill=1,stroke=0)
-        c.setFillColor(ac); c.rect(0,0,3,h,fill=1,stroke=0)
+
+        # Background
+        c.setFillColor(bg)
+        c.roundRect(0, 0, w, h, 3*mm, fill=1, stroke=0)
+
+        # Left accent bar
+        c.setFillColor(ac)
+        c.rect(0, 0, 3, h, fill=1, stroke=0)
+
+        # Label at top
         label = "What happened?" if self.kind == "tip" else "Warning"
-        c.setFont("Inter-B", 8); c.setFillColor(ac)
-        c.drawString(5*mm, h - 8.5*mm, label)
-        self._p.drawOn(c, 5*mm, 3.5*mm)
+        c.setFont("Inter-B", 8.5)
+        c.setFillColor(ac)
+        label_y = h - self.PAD_TOP - 3*mm
+        c.drawString(self.PAD_LR, label_y, label)
+
+        # Body text below label
+        text_y = h - self.PAD_TOP - self.LABEL_H - self._ph
+        self._p.drawOn(c, self.PAD_LR, text_y)
 
 
 class PartDivider(Flowable):
@@ -577,38 +597,38 @@ def build_pdf(output, dark=False):
 
     S = _styles(T); story = []
 
-    # Cover
+    # Cover page — just the image, nothing else
     if os.path.exists(cover):
         story.append(NextPageTemplate("cover"))
         story.append(CoverImage(cover))
-        story.append(NextPageTemplate("blank"))
+        story.append(NextPageTemplate("normal"))
         story.append(PageBreak())
     else:
-        print(f"  ⚠  cover.png not found, using text title")
+        # No cover image — use a text title page instead
+        print(f"  ⚠  cover.png not found, using text title page")
         story.append(NextPageTemplate("blank"))
-
-    # Title info page
-    story.append(Spacer(1,50*mm))
-    story.append(Paragraph("Git By Example",
-        ParagraphStyle("t",fontName="Inter-B",fontSize=32,leading=38,textColor=T["heading"])))
-    story.append(Spacer(1,5*mm))
-    story.append(AccentBar(T["accent"]))
-    story.append(Spacer(1,8*mm))
-    story.append(Paragraph("A practical guide to Git — learn by doing,<br/>not by reading manuals.",
-        ParagraphStyle("s",fontName="Inter",fontSize=12,leading=18,textColor=T["text2"])))
-    story.append(Spacer(1,35*mm))
-    story.append(Paragraph("Dariush Abbasi",
-        ParagraphStyle("a",fontName="Inter-B",fontSize=12,leading=16,textColor=T["text"])))
-    story.append(Spacer(1,3*mm))
-    story.append(Paragraph(datetime.datetime.now().strftime("%B %Y"),
-        ParagraphStyle("d",fontName="Inter",fontSize=9,leading=13,textColor=T["text2"])))
-    story.append(Spacer(1,5*mm))
-    story.append(Paragraph("github.com/boringcollege/git-by-example",
-        ParagraphStyle("u",fontName="Plex",fontSize=8,leading=12,textColor=T["accent"])))
-    story.append(Spacer(1,4*mm))
-    story.append(Paragraph(f"{mode.capitalize()} Edition",
-        ParagraphStyle("m",fontName="Inter",fontSize=8,leading=12,textColor=T["text2"])))
-    story.append(PageBreak())
+        story.append(Spacer(1,50*mm))
+        story.append(Paragraph("Git By Example",
+            ParagraphStyle("t",fontName="Inter-B",fontSize=32,leading=38,textColor=T["heading"])))
+        story.append(Spacer(1,5*mm))
+        story.append(AccentBar(T["accent"]))
+        story.append(Spacer(1,8*mm))
+        story.append(Paragraph("A practical guide to Git — learn by doing,<br/>not by reading manuals.",
+            ParagraphStyle("s",fontName="Inter",fontSize=12,leading=18,textColor=T["text2"])))
+        story.append(Spacer(1,35*mm))
+        story.append(Paragraph("Dariush Abbasi",
+            ParagraphStyle("a",fontName="Inter-B",fontSize=12,leading=16,textColor=T["text"])))
+        story.append(Spacer(1,3*mm))
+        story.append(Paragraph(datetime.datetime.now().strftime("%B %Y"),
+            ParagraphStyle("d",fontName="Inter",fontSize=9,leading=13,textColor=T["text2"])))
+        story.append(Spacer(1,5*mm))
+        story.append(Paragraph("github.com/boringcollege/git-by-example",
+            ParagraphStyle("u",fontName="Plex",fontSize=8,leading=12,textColor=T["accent"])))
+        story.append(Spacer(1,4*mm))
+        story.append(Paragraph(f"{mode.capitalize()} Edition",
+            ParagraphStyle("m",fontName="Inter",fontSize=8,leading=12,textColor=T["text2"])))
+        story.append(NextPageTemplate("normal"))
+        story.append(PageBreak())
 
     # TOC
     story.append(NextPageTemplate("normal"))
